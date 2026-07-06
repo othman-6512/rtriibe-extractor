@@ -72,8 +72,8 @@ const CATEGORIES = [
   ]},
 ];
 
-const COMPACT_KEYS = new Set(["candidate_id","full_name","teaching_level","subject_specialism","teaching_qualification","qts_holder","curriculum","current_last_school","available_from","role_type","notes"]);
 const ALL_COLS = CATEGORIES.flatMap(cat => cat.cols);
+const TABLE_W  = ALL_COLS.reduce((s,c) => s+c.width, 0) + 38;
 
 const btn = (bg, color, extra={}) => ({
   border:"none", borderRadius:6, padding:"8px 18px", fontWeight:"bold",
@@ -105,6 +105,9 @@ const Cell = ({ col, c, onUpdate }) => {
   return <span style={{ color:val?"#333":"#ccc" }} title={val}>{val||"—"}</span>;
 };
 
+const inputStyle = { flex:1, border:"1px solid #e0e0e0", borderRadius:5, padding:"4px 9px", fontSize:12, fontFamily:"Arial", outline:"none", background:"#fafafa", boxSizing:"border-box" };
+const selectStyle = { flex:1, border:"1px solid #e0e0e0", borderRadius:5, padding:"4px 9px", fontSize:12, fontFamily:"Arial", outline:"none", background:"#fafafa", cursor:"pointer" };
+
 export default function App() {
   const [view, setView]             = useState("extract");
   const [candidates, setCandidates] = useState([]);
@@ -116,7 +119,6 @@ export default function App() {
   const [loading, setLoading]       = useState(false);
   const [result, setResult]         = useState(null);
   const [error, setError]           = useState("");
-  const [debug, setDebug]           = useState("");
   const [justAdded, setJustAdded]   = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [bulkFiles, setBulkFiles]   = useState([]);
@@ -128,7 +130,6 @@ export default function App() {
   const [filterCurriculum, setFilterCurriculum] = useState("");
   const [filterQTS, setFilterQTS]   = useState("");
   const [filterRoleType, setFilterRoleType] = useState("");
-  const [compactMode, setCompactMode] = useState(true);
   const [hoveredRow, setHoveredRow] = useState(null);
   const [vacancies, setVacancies]   = useState([]);
   const [vacancyText, setVacancyText] = useState("");
@@ -163,19 +164,24 @@ export default function App() {
   const saveVacancy = () => {
     if (!vacancyText.trim()) return;
     const title = vacancyText.trim().slice(0, 65) + (vacancyText.length > 65 ? "..." : "");
-    const entry = { _id: Date.now(), title, description: vacancyText.trim(), savedAt: new Date().toLocaleDateString() };
-    const nl = [entry, ...vacancies]; setVacancies(nl); persistVacList(nl); setSelectedVacancyId(entry._id);
+    if (selectedVacancyId) {
+      const nl = vacancies.map(v => v._id===selectedVacancyId ? {...v, description:vacancyText.trim(), matchResults, updatedAt:new Date().toLocaleDateString()} : v);
+      setVacancies(nl); persistVacList(nl);
+    } else {
+      const entry = { _id:Date.now(), title, description:vacancyText.trim(), savedAt:new Date().toLocaleDateString(), matchResults };
+      const nl = [entry, ...vacancies]; setVacancies(nl); persistVacList(nl); setSelectedVacancyId(entry._id);
+    }
   };
   const deleteVacancy = (id) => {
     const nl = vacancies.filter(v => v._id !== id); setVacancies(nl); persistVacList(nl);
     if (selectedVacancyId === id) { setSelectedVacancyId(null); setMatchResults([]); }
   };
-  const loadVacancy = (v) => { setVacancyText(v.description); setSelectedVacancyId(v._id); setMatchResults([]); setMatchError(""); };
+  const loadVacancy = (v) => { setVacancyText(v.description); setSelectedVacancyId(v._id); setMatchResults(v.matchResults||[]); setMatchError(""); };
 
   const handleFile = (e) => {
     const files = Array.from(e.target.files).slice(0, 50);
     if (!files.length) return;
-    setError(""); setDebug(""); setResult(null); setJustAdded(false);
+    setError(""); setResult(null); setJustAdded(false);
     setBulkResults([]); setBulkDone(false); setBulkCurrent(0);
     if (files.length === 1) {
       setFileName(files[0].name); setBulkFiles([]);
@@ -195,7 +201,7 @@ export default function App() {
   const extract = async () => {
     const hasInput = mode==="paste" ? cvText.trim() : pdfBase64;
     if (!hasInput) { setError(mode==="paste"?"Please paste a CV first.":"Please upload a PDF first."); return; }
-    setLoading(true); setError(""); setDebug(""); setResult(null); setJustAdded(false);
+    setLoading(true); setError(""); setResult(null); setJustAdded(false);
     try {
       const content = mode==="pdf"
         ? [{ type:"document", source:{ type:"base64", media_type:"application/pdf", data:pdfBase64 }},{ type:"text", text:"Extract all candidate information." }]
@@ -218,7 +224,7 @@ export default function App() {
         const parsed = JSON.parse(raw);
         addCandidateSafe(parsed);
         setBulkResults(prev => [...prev, { name:file.name, status:"success", fullName:parsed.full_name||"" }]);
-      } catch(err) { setBulkResults(prev => [...prev, { name:file.name, status:"error" }]); }
+      } catch { setBulkResults(prev => [...prev, { name:file.name, status:"error" }]); }
     }
     setBulkDone(true); setLoading(false);
   };
@@ -236,8 +242,12 @@ export default function App() {
     setMatchLoading(false);
   };
 
+  const rematchAndSave = async () => {
+    await matchVacancy();
+  };
+
   const resetExtract = () => {
-    setCvText(""); setPdfBase64(null); setFileName(""); setResult(null); setError(""); setDebug(""); setJustAdded(false);
+    setCvText(""); setPdfBase64(null); setFileName(""); setResult(null); setError(""); setJustAdded(false);
     setBulkFiles([]); setBulkResults([]); setBulkDone(false); setBulkCurrent(0);
     if (fileRef.current) fileRef.current.value = "";
   };
@@ -254,8 +264,7 @@ export default function App() {
   const progress     = bulkFiles.length > 0 ? Math.round((bulkCurrent/bulkFiles.length)*100) : 0;
   const successCount = bulkResults.filter(r=>r.status==="success").length;
   const errorCount   = bulkResults.filter(r=>r.status==="error").length;
-  const displayCols  = compactMode ? ALL_COLS.filter(col=>COMPACT_KEYS.has(col.key)) : ALL_COLS;
-  const tableW       = displayCols.reduce((s,c)=>s+c.width,0)+38;
+
   const filteredCandidates = candidates.filter(c => {
     if (searchName && !(c.full_name||"").toLowerCase().includes(searchName.toLowerCase())) return false;
     if (filterLevel && c.teaching_level !== filterLevel) return false;
@@ -264,11 +273,39 @@ export default function App() {
     if (filterRoleType && c.role_type !== filterRoleType) return false;
     return true;
   });
-  const hasFilters   = searchName||filterLevel||filterCurriculum||filterQTS||filterRoleType;
-  const levels       = [...new Set(candidates.map(c=>c.teaching_level).filter(Boolean))].sort();
-  const curricula    = [...new Set(candidates.map(c=>c.curriculum).filter(Boolean))].sort();
-  const roleTypes    = [...new Set(candidates.map(c=>c.role_type).filter(Boolean))].sort();
-  const selStyle     = { fontSize:12, padding:"5px 10px", border:"1px solid #ddd", borderRadius:6, fontFamily:"Arial", background:"#fff", outline:"none", cursor:"pointer" };
+
+  const hasFilters = searchName||filterLevel||filterCurriculum||filterQTS||filterRoleType;
+  const levels     = [...new Set(candidates.map(c=>c.teaching_level).filter(Boolean))].sort();
+  const curricula  = [...new Set(candidates.map(c=>c.curriculum).filter(Boolean))].sort();
+  const roleTypes  = [...new Set(candidates.map(c=>c.role_type).filter(Boolean))].sort();
+  const selStyle   = { fontSize:12, padding:"5px 10px", border:"1px solid #ddd", borderRadius:6, fontFamily:"Arial", background:"#fff", outline:"none", cursor:"pointer" };
+
+  const renderDetailField = (key, label) => {
+    const val = selectedCandidate[key] || "";
+    const isAvailText = ["available_from","notice_period"].includes(key);
+    const isRoleType  = key === "role_type";
+
+    return (
+      <div key={key} style={{ borderBottom:"1px solid #f0f0f0", padding:"9px 0", display:"flex", gap:10, alignItems:"center" }}>
+        <div style={{ width:165, fontSize:11, color:"#999", flexShrink:0 }}>{label}</div>
+        {isAvailText ? (
+          <input value={val} onChange={e=>updateField(selectedCandidate._id, key, e.target.value)}
+            placeholder="e.g. August 2025, Immediately..." style={inputStyle} />
+        ) : isRoleType ? (
+          <select value={val} onChange={e=>updateField(selectedCandidate._id, key, e.target.value)} style={selectStyle}>
+            <option value="">Select...</option>
+            <option value="Permanent">Permanent</option>
+            <option value="Supply">Supply</option>
+            <option value="Both">Both</option>
+            <option value="Tutor">Tutor</option>
+            <option value="LSA">LSA</option>
+          </select>
+        ) : (
+          <div style={{ fontSize:12, color:val?"#1a1a1a":"#ccc", fontWeight:val?"500":"normal" }}>{val||"—"}</div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div style={{ fontFamily:"Arial,sans-serif", fontSize:13, minHeight:"100vh", background:"#f0f0f0" }}>
@@ -353,7 +390,7 @@ export default function App() {
                                 {r?.status==="error"&&<span style={{ color:"#c00" }}>✗</span>}
                               </div>
                               <div style={{ flex:1, fontSize:11, color:r?.status==="success"?"#333":"#888", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                                {r?.status==="success"&&r.fullName ? r.fullName : file.name.replace(/\.pdf$/i,"")}
+                                {r?.status==="success"&&r.fullName?r.fullName:file.name.replace(/\.pdf$/i,"")}
                               </div>
                             </div>
                           );
@@ -417,7 +454,6 @@ export default function App() {
             <div style={{ background:"#fff", borderRadius:8, padding:"60px 24px", textAlign:"center", color:"#aaa", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
               <div style={{ fontSize:40, marginBottom:12 }}>📋</div>
               <div style={{ fontSize:14, color:"#888", marginBottom:4 }}>No candidates yet</div>
-              <div style={{ fontSize:12 }}>Extract your first CV to get started</div>
               <button onClick={()=>setView("extract")} style={btn(RED,"#fff",{ marginTop:16, fontSize:13, padding:"9px 20px" })}>Go to extractor</button>
             </div>
           ) : selectedCandidate ? (
@@ -435,27 +471,27 @@ export default function App() {
               </div>
               <div style={{ marginBottom:16, padding:"10px 14px", background:"#f9f9f9", borderRadius:6, display:"flex", alignItems:"center", gap:12 }}>
                 <div style={{ fontSize:11, color:"#999", width:130, flexShrink:0 }}>Candidate ID (rTR)</div>
-                <input value={selectedCandidate.candidate_id||""} onChange={e=>updateField(selectedCandidate._id,"candidate_id",e.target.value)} placeholder="e.g. rTRJD01"
-                  style={{ flex:1, border:"1px solid #ddd", borderRadius:5, padding:"5px 10px", fontSize:12, fontFamily:"Arial", outline:"none" }} />
+                <input value={selectedCandidate.candidate_id||""} onChange={e=>updateField(selectedCandidate._id,"candidate_id",e.target.value)}
+                  placeholder="e.g. rTRJD01" style={inputStyle} />
+              </div>
+              <div style={{ background:"#fffbf0", border:"1px solid #ffe082", borderRadius:6, padding:"8px 14px", marginBottom:16, fontSize:11, color:"#b07d00" }}>
+                ✏️ Availability fields are editable — type directly or use the dropdown for Role Type
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 32px" }}>
-                {DETAIL_FIELDS.map(([key,label]) => (
-                  <div key={key} style={{ borderBottom:"1px solid #f0f0f0", padding:"9px 0", display:"flex", gap:10 }}>
-                    <div style={{ width:160, fontSize:11, color:"#999", flexShrink:0 }}>{label}</div>
-                    <div style={{ fontSize:12, color:selectedCandidate[key]?"#1a1a1a":"#ccc", fontWeight:selectedCandidate[key]?"500":"normal" }}>{selectedCandidate[key]||"—"}</div>
-                  </div>
-                ))}
+                {DETAIL_FIELDS.map(([key,label]) => renderDetailField(key, label))}
               </div>
-              {selectedCandidate.notes && <div style={{ marginTop:16, padding:"12px 16px", borderLeft:`3px solid ${RED}`, background:"#fff5f5" }}><div style={{ fontSize:10, color:"#999", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.5px" }}>Notes / flags</div><div style={{ fontSize:12, color:"#a00", lineHeight:1.6 }}>{selectedCandidate.notes}</div></div>}
+              {selectedCandidate.notes && (
+                <div style={{ marginTop:16, padding:"12px 16px", borderLeft:`3px solid ${RED}`, background:"#fff5f5" }}>
+                  <div style={{ fontSize:10, color:"#999", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.5px" }}>Notes / flags</div>
+                  <div style={{ fontSize:12, color:"#a00", lineHeight:1.6 }}>{selectedCandidate.notes}</div>
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ background:"#fff", borderRadius:8, padding:"20px 24px", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, flexWrap:"wrap", gap:10 }}>
-                <div style={{ fontSize:13, color:"#555" }}>{hasFilters?`${filteredCandidates.length} of ${candidates.length} candidates`:`${candidates.length} candidates`} · click a row to view profile</div>
+                <div style={{ fontSize:13, color:"#555" }}>{hasFilters?`${filteredCandidates.length} of ${candidates.length} candidates`:`${candidates.length} candidates`} · click a row to view & edit</div>
                 <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-                  <button onClick={()=>setCompactMode(!compactMode)} style={btn(compactMode?"#37474F":"#eee",compactMode?"#fff":"#555",{ padding:"6px 14px", fontWeight:"normal", fontSize:12 })}>
-                    {compactMode?"Compact ▼":"Full view ▲"}
-                  </button>
                   <button onClick={downloadExcel} style={btn("#1a6e3c","#fff",{ padding:"6px 16px" })}>↓ Download Excel</button>
                   {!confirmClear
                     ? <button onClick={()=>setConfirmClear(true)} style={btn("#fff","#c00",{ border:"1px solid #fcc", padding:"6px 12px" })}>Clear all</button>
@@ -466,6 +502,7 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Search + Filters */}
               <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap", alignItems:"center" }}>
                 <input value={searchName} onChange={e=>setSearchName(e.target.value)} placeholder="🔍 Search by name..." style={{ ...selStyle, padding:"6px 12px", width:190 }} />
                 <select value={filterLevel} onChange={e=>setFilterLevel(e.target.value)} style={selStyle}>
@@ -489,36 +526,32 @@ export default function App() {
                 {hasFilters && <button onClick={()=>{setSearchName("");setFilterLevel("");setFilterCurriculum("");setFilterQTS("");setFilterRoleType("");}} style={btn("#fff","#c00",{ border:"1px solid #fcc", padding:"5px 12px", fontWeight:"normal", fontSize:12 })}>✕ Clear</button>}
               </div>
 
+              {/* Full table with all columns */}
               <div style={{ overflowX:"auto", border:"1px solid #e0e0e0", borderRadius:6 }}>
-                <table style={{ borderCollapse:"collapse", fontSize:11, width:tableW, tableLayout:"fixed" }}>
-                  <colgroup>{displayCols.map(col=><col key={col.key} width={col.width}/>)}<col width={38}/></colgroup>
+                <table style={{ borderCollapse:"collapse", fontSize:11, width:TABLE_W, tableLayout:"fixed" }}>
+                  <colgroup>{ALL_COLS.map(col=><col key={col.key} width={col.width}/>)}<col width={38}/></colgroup>
                   <thead>
-                    {!compactMode && (
-                      <tr>
-                        {CATEGORIES.map(cat => {
-                          const vis = cat.cols.filter(col=>displayCols.some(d=>d.key===col.key));
-                          return vis.length===0?null:(
-                            <th key={cat.label} colSpan={vis.length} style={{ background:cat.color, color:"#fff", padding:"7px 10px", textAlign:"left", fontWeight:"bold", fontSize:10, letterSpacing:"0.4px", borderRight:"2px solid rgba(255,255,255,0.3)", whiteSpace:"nowrap" }}>{cat.icon} {cat.label}</th>
-                          );
-                        })}
-                        <th style={{ background:"#263238" }}></th>
-                      </tr>
-                    )}
-                    <tr style={{ background:compactMode?"#37474F":"#f5f5f5" }}>
-                      {displayCols.map(col=>(
-                        <th key={col.key} style={{ padding:"6px 8px", textAlign:"left", fontSize:10, fontWeight:"bold", color:compactMode?"#fff":"#555", borderBottom:"2px solid #ddd", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{col.label}</th>
+                    <tr>
+                      {CATEGORIES.map(cat=>(
+                        <th key={cat.label} colSpan={cat.cols.length} style={{ background:cat.color, color:"#fff", padding:"7px 10px", textAlign:"left", fontWeight:"bold", fontSize:10, letterSpacing:"0.4px", borderRight:"2px solid rgba(255,255,255,0.3)", whiteSpace:"nowrap" }}>{cat.icon} {cat.label}</th>
                       ))}
-                      <th style={{ borderBottom:"2px solid #ddd", background:compactMode?"#37474F":"#f5f5f5" }}></th>
+                      <th style={{ background:"#263238" }}></th>
+                    </tr>
+                    <tr style={{ background:"#f5f5f5" }}>
+                      {ALL_COLS.map(col=>(
+                        <th key={col.key} style={{ padding:"6px 8px", textAlign:"left", fontSize:10, fontWeight:"bold", color:"#555", borderBottom:"2px solid #ddd", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{col.label}</th>
+                      ))}
+                      <th style={{ borderBottom:"2px solid #ddd" }}></th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredCandidates.length===0 ? (
-                      <tr><td colSpan={displayCols.length+1} style={{ padding:"24px", textAlign:"center", color:"#aaa", fontSize:13 }}>No candidates match your filters</td></tr>
+                      <tr><td colSpan={ALL_COLS.length+1} style={{ padding:"24px", textAlign:"center", color:"#aaa", fontSize:13 }}>No candidates match your filters</td></tr>
                     ) : filteredCandidates.map((c,i)=>(
                       <tr key={c._id} onClick={()=>setSelectedCandidate(c)}
                         style={{ background:hoveredRow===c._id?"#fff3f3":i%2===0?"#fafafa":"#fff", borderBottom:"1px solid #eee", cursor:"pointer" }}
                         onMouseEnter={()=>setHoveredRow(c._id)} onMouseLeave={()=>setHoveredRow(null)}>
-                        {displayCols.map(col=>(
+                        {ALL_COLS.map(col=>(
                           <td key={col.key} style={{ padding:"5px 8px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                             <Cell col={col} c={c} onUpdate={updateField}/>
                           </td>
@@ -533,7 +566,7 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-              <div style={{ marginTop:10, fontSize:11, color:"#aaa" }}>Compact view fits most screens. Toggle Full view for all columns. Click any row to view candidate profile.</div>
+              <div style={{ marginTop:10, fontSize:11, color:"#aaa" }}>Scroll right to see all fields. Click any row to view & edit candidate profile.</div>
             </div>
           )}
         </div>
@@ -552,7 +585,10 @@ export default function App() {
                   <div key={v._id} onClick={()=>loadVacancy(v)} style={{ padding:"8px 10px", borderRadius:6, cursor:"pointer", fontSize:11, background:selectedVacancyId===v._id?"#fff3f3":"#f9f9f9", border:`1px solid ${selectedVacancyId===v._id?"#f5c5c5":"#eee"}`, display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:6 }}>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ color:"#333", fontWeight:selectedVacancyId===v._id?"bold":"normal", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{v.title}</div>
-                      <div style={{ color:"#aaa", fontSize:10, marginTop:2 }}>{v.savedAt}</div>
+                      <div style={{ display:"flex", gap:8, marginTop:3, alignItems:"center" }}>
+                        <span style={{ color:"#aaa", fontSize:10 }}>{v.savedAt}</span>
+                        {v.matchResults&&v.matchResults.length>0&&<span style={{ background:"#e8f5e9", color:"#2e7d32", fontSize:10, padding:"1px 6px", borderRadius:8, fontWeight:"bold" }}>{v.matchResults.length} matched</span>}
+                      </div>
                     </div>
                     <button onClick={e=>{e.stopPropagation();deleteVacancy(v._id);}} style={{ background:"none", border:"none", color:"#ddd", cursor:"pointer", fontSize:14, padding:0 }} onMouseEnter={e=>e.target.style.color="#c00"} onMouseLeave={e=>e.target.style.color="#ddd"}>✕</button>
                   </div>
@@ -563,10 +599,9 @@ export default function App() {
 
           <div style={{ background:"#fff", borderRadius:8, padding:"20px 24px", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
             {candidates.length===0 ? (
-              <div style={{ textAlign:"center", padding:"40px 0", color:"#aaa" }}>
+              <div style={{ textAlign:"center", padding:"40px 0" }}>
                 <div style={{ fontSize:32, marginBottom:10 }}>📋</div>
                 <div style={{ fontSize:14, color:"#888", marginBottom:4 }}>No candidates in database</div>
-                <div style={{ fontSize:12 }}>Add candidates first before matching</div>
                 <button onClick={()=>setView("extract")} style={btn(RED,"#fff",{ marginTop:16, fontSize:13, padding:"9px 20px" })}>Go to extractor</button>
               </div>
             ) : (
@@ -577,19 +612,45 @@ export default function App() {
                     placeholder="Paste the full vacancy — job title, school, subject, level, curriculum, requirements, QTS needed..."
                     style={{ width:"100%", height:150, border:"1px solid #ddd", borderRadius:6, padding:12, fontSize:12, fontFamily:"Arial", resize:"vertical", boxSizing:"border-box", outline:"none" }} />
                 </div>
-                <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-                  <button onClick={matchVacancy} disabled={matchLoading}
-                    style={btn(matchLoading?"#aaa":RED,"#fff",{ fontSize:13, padding:"9px 22px", cursor:matchLoading?"not-allowed":"pointer" })}>
-                    {matchLoading?"Matching...": `🎯 Match with ${candidates.length} candidates`}
-                  </button>
-                  <button onClick={saveVacancy} disabled={!vacancyText.trim()}
-                    style={btn("#fff","#555",{ border:"1px solid #ccc", fontSize:12, padding:"9px 16px", fontWeight:"normal", opacity:vacancyText.trim()?1:0.5 })}>Save vacancy</button>
-                  {vacancyText && <button onClick={()=>{setVacancyText("");setMatchResults([]);setSelectedVacancyId(null);}} style={btn("#fff","#aaa",{ border:"1px solid #eee", fontSize:12, padding:"9px 14px", fontWeight:"normal" })}>Clear</button>}
+                <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap", alignItems:"center" }}>
+                  {selectedVacancyId ? (
+                    <button onClick={async()=>{await matchVacancy();}} disabled={matchLoading}
+                      style={btn(matchLoading?"#aaa":"#1565C0","#fff",{ fontSize:13, padding:"9px 22px", cursor:matchLoading?"not-allowed":"pointer" })}>
+                      {matchLoading?"Rematching...":"🔄 Rematch & Update"}
+                    </button>
+                  ) : (
+                    <button onClick={matchVacancy} disabled={matchLoading}
+                      style={btn(matchLoading?"#aaa":RED,"#fff",{ fontSize:13, padding:"9px 22px", cursor:matchLoading?"not-allowed":"pointer" })}>
+                      {matchLoading?"Matching...":`🎯 Match with ${candidates.length} candidates`}
+                    </button>
+                  )}
+                  {!selectedVacancyId && matchResults.length>0 && (
+                    <button onClick={saveVacancy}
+                      style={btn(RED,"#fff",{ fontSize:12, padding:"9px 16px" })}>
+                      💾 Save vacancy with results
+                    </button>
+                  )}
+                  {selectedVacancyId && matchResults.length>0 && (
+                    <button onClick={saveVacancy}
+                      style={btn("#fff","#555",{ border:"1px solid #ccc", fontSize:12, padding:"9px 16px", fontWeight:"normal" })}>
+                      💾 Update saved results
+                    </button>
+                  )}
+                  {!selectedVacancyId && !matchResults.length && vacancyText && (
+                    <button onClick={saveVacancy}
+                      style={btn("#fff","#555",{ border:"1px solid #ccc", fontSize:12, padding:"9px 16px", fontWeight:"normal" })}>
+                      Save vacancy
+                    </button>
+                  )}
+                  {vacancyText && <button onClick={()=>{setVacancyText("");setMatchResults([]);setSelectedVacancyId(null);}} style={btn("#fff","#aaa",{ border:"1px solid #eee", fontSize:12, padding:"9px 14px", fontWeight:"normal" })}>New vacancy</button>}
                 </div>
                 {matchError && <div style={{ marginBottom:14, fontSize:12, color:RED, background:"#fff5f5", border:"1px solid #fcc", padding:"8px 12px", borderRadius:6 }}>{matchError}</div>}
                 {matchResults.length>0 && (
                   <div>
-                    <div style={{ fontWeight:"bold", fontSize:13, color:"#333", marginBottom:12 }}>Results — {matchResults.length} candidates ranked</div>
+                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, flexWrap:"wrap", gap:8 }}>
+                      <div style={{ fontWeight:"bold", fontSize:13, color:"#333" }}>Results — {matchResults.length} candidates ranked</div>
+                      {selectedVacancyId && <span style={{ fontSize:11, color:"#888", fontStyle:"italic" }}>Saved results · click Rematch to refresh</span>}
+                    </div>
                     <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
                       {matchResults.map((r,i)=>{
                         const ss=scoreStyle(r.score);
@@ -598,7 +659,7 @@ export default function App() {
                           <div key={i} style={{ border:`1px solid ${ss.border}`, borderRadius:8, padding:"12px 16px", background:ss.bg }}>
                             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6, flexWrap:"wrap", gap:8 }}>
                               <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                                <div style={{ width:32, height:32, borderRadius:"50%", background:ss.color, display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:"bold", fontSize:12, flexShrink:0 }}>{i+1}</div>
+                                <div style={{ width:32, height:32, borderRadius:"50%", background:ss.color, display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:"bold", fontSize:12 }}>{i+1}</div>
                                 <div>
                                   <div style={{ fontWeight:"bold", fontSize:13, color:"#1a1a1a" }}>{r.name}</div>
                                   {cand&&<div style={{ fontSize:11, color:"#777" }}>{cand.subject_specialism||""}{cand.teaching_level?` · ${cand.teaching_level}`:""}</div>}

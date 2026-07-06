@@ -87,6 +87,70 @@ const scoreStyle = (score) => {
   return { bg:"#ffebee", color:"#c62828", border:"#ef9a9a" };
 };
 
+const SUBJECT_SYNONYMS = {
+  "english":           ["english","language arts","esl","eal","elt","ell","literacy"],
+  "maths":             ["math","maths","mathematics","numeracy"],
+  "math":              ["math","maths","mathematics","numeracy"],
+  "mathematics":       ["math","maths","mathematics","numeracy"],
+  "numeracy":          ["math","maths","mathematics","numeracy"],
+  "science":           ["science","biology","chemistry","physics","stem"],
+  "biology":           ["biology","science","life science"],
+  "chemistry":         ["chemistry","science"],
+  "physics":           ["physics","science"],
+  "pe":                ["pe","p.e","physical education","sport","sports","fitness"],
+  "physical education":["pe","physical education","sport","sports"],
+  "sport":             ["pe","physical education","sport","sports"],
+  "ict":               ["ict","computing","computer","technology","it","digital"],
+  "computing":         ["ict","computing","computer","technology","digital"],
+  "arabic":            ["arabic","arab"],
+  "french":            ["french"],
+  "spanish":           ["spanish"],
+  "geography":         ["geography","geog"],
+  "history":           ["history","humanities","social studies"],
+  "humanities":        ["history","humanities","geography","social studies"],
+  "art":               ["art","arts","design","creative","visual arts"],
+  "design":            ["design","art","dt","design technology"],
+  "music":             ["music"],
+  "drama":             ["drama","theatre","theater","performing arts"],
+  "business":          ["business","economics","commerce","accounting"],
+  "economics":         ["economics","business","commerce"],
+  "religious":         ["religious","re","islam","islamic","divinity","christian","rs"],
+  "islamic":           ["islamic","islam","religious","re"],
+  "lsa":               ["lsa","learning support","sen","send","special needs","inclusion","ta"],
+  "send":              ["send","sen","special needs","lsa","learning support","inclusion"],
+  "sen":               ["send","sen","special needs","lsa","learning support","inclusion"],
+  "eyfs":              ["eyfs","early years","foundation","nursery","reception","kindergarten","kinder"],
+  "primary":           ["primary","ks1","ks2","key stage 1","key stage 2","junior","elementary"],
+  "esl":               ["esl","eal","elt","ell","english","language"],
+  "eal":               ["eal","esl","elt","ell","english","language"],
+  "cover":             [],
+};
+
+const preFilterBySubject = (vacancyText, allCandidates) => {
+  const vacLower = vacancyText.toLowerCase();
+
+  const scored = allCandidates.map(c => {
+    const specialism = (c.subject_specialism || "").toLowerCase();
+    if (!specialism) return { cand: c, match: false };
+
+    const words = specialism.split(/[\s,\/&\-+]+/).filter(w => w.length >= 2);
+    const match = words.some(word => {
+      const synonyms = SUBJECT_SYNONYMS[word] || [word];
+      return synonyms.some(syn => {
+        try {
+          const esc = syn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          return new RegExp("\\b" + esc + "\\b", "i").test(vacLower);
+        } catch { return vacLower.includes(syn); }
+      });
+    });
+    return { cand: c, match };
+  });
+
+  const matched = scored.filter(s => s.match).map(s => s.cand);
+  if (matched.length === 0) return { candidates: allCandidates, info: null };
+  return { candidates: matched, info: `Subject filter applied — checking ${matched.length} of ${allCandidates.length} candidates` };
+};
+
 const QTSBadge = ({ val }) => (
   <span style={{ padding:"1px 7px", borderRadius:8, fontSize:10, fontWeight:"bold",
     background:val==="Yes"?"#e8f5e9":val==="In Progress"?"#fff8e1":"#f5f5f5",
@@ -136,6 +200,7 @@ export default function App() {
   const [matchResults, setMatchResults] = useState([]);
   const [matchLoading, setMatchLoading] = useState(false);
   const [matchError, setMatchError] = useState("");
+  const [matchFilterInfo, setMatchFilterInfo] = useState("");
   const [selectedVacancyId, setSelectedVacancyId] = useState(null);
   const fileRef = useRef();
 
@@ -232,9 +297,11 @@ export default function App() {
   const matchVacancy = async () => {
     if (!vacancyText.trim()) { setMatchError("Please enter a vacancy description."); return; }
     if (!candidates.length) { setMatchError("No candidates in database."); return; }
-    setMatchLoading(true); setMatchError(""); setMatchResults([]);
+    setMatchLoading(true); setMatchError(""); setMatchResults([]); setMatchFilterInfo("");
     try {
-      const summary = candidates.map(c => ({ id:c._id, name:c.full_name||"Unknown", level:c.teaching_level, specialism:c.subject_specialism, curriculum:c.curriculum, qts:c.qts_holder, experience:c.years_experience, qualification:c.teaching_qualification, available:c.available_from, role_type:c.role_type, notes:c.notes }));
+      const { candidates: pool, info } = preFilterBySubject(vacancyText, candidates);
+      if (info) setMatchFilterInfo(info);
+      const summary = pool.map(c => ({ id:c._id, name:c.full_name||"Unknown", level:c.teaching_level, specialism:c.subject_specialism, curriculum:c.curriculum, qts:c.qts_holder, experience:c.years_experience, qualification:c.teaching_qualification, available:c.available_from, role_type:c.role_type, notes:c.notes }));
       const userMsg = `VACANCY:\n${vacancyText.trim()}\n\nCANDIDATES:\n${JSON.stringify(summary,null,2)}`;
       const raw = await callAPI({ model:"claude-sonnet-4-6", system:MATCH_PROMPT, messages:[{ role:"user", content:userMsg }] }, 3000);
       setMatchResults(JSON.parse(raw));
@@ -645,6 +712,7 @@ export default function App() {
                   {vacancyText && <button onClick={()=>{setVacancyText("");setMatchResults([]);setSelectedVacancyId(null);}} style={btn("#fff","#aaa",{ border:"1px solid #eee", fontSize:12, padding:"9px 14px", fontWeight:"normal" })}>New vacancy</button>}
                 </div>
                 {matchError && <div style={{ marginBottom:14, fontSize:12, color:RED, background:"#fff5f5", border:"1px solid #fcc", padding:"8px 12px", borderRadius:6 }}>{matchError}</div>}
+                {matchFilterInfo && !matchLoading && <div style={{ marginBottom:14, fontSize:12, color:"#1565C0", background:"#e3f2fd", border:"1px solid #90caf9", padding:"8px 12px", borderRadius:6 }}>🎯 {matchFilterInfo}</div>}
                 {matchResults.length>0 && (
                   <div>
                     <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, flexWrap:"wrap", gap:8 }}>

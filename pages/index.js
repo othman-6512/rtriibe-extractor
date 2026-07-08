@@ -197,7 +197,11 @@ export default function App() {
   const [matchError, setMatchError] = useState("");
   const [matchFilterInfo, setMatchFilterInfo] = useState("");
   const [selectedVacancyId, setSelectedVacancyId] = useState(null);
-  const fileRef = useRef();
+  const [checkFiles, setCheckFiles]     = useState([]);
+  const [checkResults, setCheckResults] = useState({ found:[], missing:[] });
+  const [checkDone, setCheckDone]       = useState(false);
+  const fileRef      = useRef();
+  const checkFileRef = useRef();
 
   // Keep candidatesRef in sync
   useEffect(() => { candidatesRef.current = candidates; }, [candidates]);
@@ -419,6 +423,55 @@ export default function App() {
     setMatchLoading(false);
   };
 
+  // ── CHECK RESUMES ──────────────────────────────────────────────
+  const matchToDatabase = (fileName) => {
+    const clean = fileName.replace(/\.pdf$/i,"").replace(/[_\-\.]/g," ").toLowerCase().trim();
+    const stopWords = new Set(["cv","resume","teacher","dubai","uae","the","and","for","mr","ms","miss","dr","sir","new","final","updated","copy","english","arabic","maths","math","science","primary","secondary","eyfs"]);
+    const words = clean.split(/\s+/).filter(w => w.length>2 && !stopWords.has(w));
+    if (words.length===0) return null;
+
+    let best = null; let bestScore = 0;
+    candidatesRef.current.forEach(c => {
+      const name = (c.full_name||"").toLowerCase();
+      const nameWords = name.split(/\s+/).filter(w => w.length>2);
+      const matchCount = words.filter(w => nameWords.some(nw => nw.includes(w)||w.includes(nw))).length;
+      const score = matchCount / Math.max(nameWords.length, 1);
+      if (matchCount>=1 && score>bestScore) { bestScore=score; best=c; }
+    });
+    return best;
+  };
+
+  const runCheck = (files) => {
+    const found=[]; const missing=[];
+    files.forEach(file => {
+      const match = matchToDatabase(file.name);
+      if (match) found.push({ file, candidate:match });
+      else        missing.push({ file });
+    });
+    setCheckResults({ found, missing }); setCheckDone(true);
+  };
+
+  const handleCheckFiles = (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    setCheckFiles(files); setCheckDone(false); setCheckResults({ found:[], missing:[] });
+    runCheck(files);
+  };
+
+  const resetCheck = () => {
+    setCheckFiles([]); setCheckResults({ found:[], missing:[] }); setCheckDone(false);
+    if (checkFileRef.current) checkFileRef.current.value="";
+  };
+
+  const extractMissing = () => {
+    const missingFiles = checkResults.missing.map(r=>r.file);
+    if (!missingFiles.length) return;
+    setBulkFiles(missingFiles); setBulkResults([]); setBulkDone(false); setBulkCurrent(0);
+    setBulkPaused(false); setBulkStats({ added:0, duplicates:0, failed:0 }); setFailedFiles([]);
+    setView("extract"); setMode("pdf");
+    setTimeout(() => extractBulkFiles(missingFiles), 100);
+  };
+
   const resetExtract = () => {
     setCvText(""); setPdfBase64(null); setFileName(""); setResult(null); setError(""); setJustAdded(false);
     setBulkFiles([]); setBulkResults([]); setBulkDone(false); setBulkCurrent(0);
@@ -489,7 +542,7 @@ export default function App() {
       </div>
 
       <div style={{ display:"flex", borderBottom:"2px solid #e0e0e0", background:"#fff" }}>
-        {[["extract","📄 Extract CV"],["database",`📋 Database (${candidates.length})`],["match","🎯 Match Vacancy"]].map(([key,label])=>(
+        {[["extract","📄 Extract CV"],["database",`📋 Database (${candidates.length})`],["match","🎯 Match Vacancy"],["check","🔍 Check Resumes"]].map(([key,label])=>(
           <button key={key} onClick={()=>{setView(key);setSelectedCandidate(null);}} style={{ padding:"12px 24px", border:"none", background:"none", cursor:"pointer", fontFamily:"Arial", fontSize:13, fontWeight:view===key?"bold":"normal", color:view===key?RED:"#666", borderBottom:view===key?`3px solid ${RED}`:"3px solid transparent", marginBottom:-2 }}>{label}</button>
         ))}
       </div>
@@ -745,6 +798,116 @@ export default function App() {
               <div style={{ marginTop:10, fontSize:11, color:"#aaa" }}>Scroll right to see all fields. Click any row to view & edit.</div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── CHECK ── */}
+      {view==="check" && (
+        <div style={{ padding:16 }}>
+          <div style={{ background:"#fff", borderRadius:8, padding:"20px 24px", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
+
+            {!checkDone ? (
+              <>
+                <div style={{ marginBottom:6, fontSize:15, fontWeight:"bold", color:"#333" }}>Check which resumes are already in your database</div>
+                <div style={{ fontSize:12, color:"#888", marginBottom:20 }}>
+                  Upload all your CVs at once — the app instantly checks which ones are already saved and which ones are missing. Free, no API calls.
+                </div>
+                {candidates.length===0 ? (
+                  <div style={{ textAlign:"center", padding:"30px 0", color:"#aaa" }}>
+                    <div style={{ fontSize:13, marginBottom:8 }}>Your database is empty</div>
+                    <div style={{ fontSize:12 }}>Add candidates first before checking</div>
+                    <button onClick={()=>setView("extract")} style={btn(RED,"#fff",{marginTop:16,fontSize:13,padding:"9px 20px"})}>Go to extractor</button>
+                  </div>
+                ) : (
+                  <>
+                    <div onClick={()=>checkFileRef.current.click()}
+                      style={{ border:"2px dashed #ccc", borderRadius:6, padding:"36px 24px", textAlign:"center", cursor:"pointer", background:"#fafafa" }}>
+                      <div style={{ fontSize:14, color:"#555", marginBottom:6 }}>Click to upload your CV files</div>
+                      <div style={{ fontSize:12, color:"#aaa" }}>Select as many as you want — no limit</div>
+                    </div>
+                    <input ref={checkFileRef} type="file" accept=".pdf" multiple onChange={handleCheckFiles} style={{ display:"none" }}/>
+                    <div style={{ marginTop:12, fontSize:11, color:"#aaa" }}>
+                      Currently checking against <b>{candidates.length}</b> candidates in your database
+                    </div>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20, flexWrap:"wrap", gap:10 }}>
+                  <div>
+                    <div style={{ fontSize:15, fontWeight:"bold", color:"#333" }}>{checkFiles.length} files checked</div>
+                    <div style={{ fontSize:12, color:"#888", marginTop:2 }}>Matched against {candidates.length} candidates in your database</div>
+                  </div>
+                  <button onClick={resetCheck} style={btn("#fff","#555",{border:"1px solid #ccc",padding:"6px 14px",fontWeight:"normal",fontSize:12})}>Check again</button>
+                </div>
+
+                {/* Summary bar */}
+                <div style={{ display:"flex", gap:12, marginBottom:16 }}>
+                  <div style={{ flex:1, background:"#e8f5e9", border:"1px solid #a5d6a7", borderRadius:8, padding:"12px 16px", textAlign:"center" }}>
+                    <div style={{ fontSize:28, fontWeight:"bold", color:"#2e7d32" }}>{checkResults.found.length}</div>
+                    <div style={{ fontSize:12, color:"#2e7d32", marginTop:2 }}>Already in database</div>
+                  </div>
+                  <div style={{ flex:1, background:"#ffebee", border:"1px solid #ef9a9a", borderRadius:8, padding:"12px 16px", textAlign:"center" }}>
+                    <div style={{ fontSize:28, fontWeight:"bold", color:"#c62828" }}>{checkResults.missing.length}</div>
+                    <div style={{ fontSize:12, color:"#c62828", marginTop:2 }}>Not found — missing</div>
+                  </div>
+                </div>
+
+                {checkResults.missing.length>0&&(
+                  <div style={{ marginBottom:16, padding:"12px 16px", background:"#fff3e0", border:"1px solid #ffcc80", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:10 }}>
+                    <div>
+                      <div style={{ fontWeight:"bold", fontSize:13, color:"#e65100" }}>{checkResults.missing.length} CVs not in your database</div>
+                      <div style={{ fontSize:12, color:"#888", marginTop:2 }}>Click to extract and add them all automatically</div>
+                    </div>
+                    <button onClick={extractMissing} style={btn(RED,"#fff",{fontSize:13,padding:"9px 20px"})}>
+                      Extract {checkResults.missing.length} missing CVs →
+                    </button>
+                  </div>
+                )}
+
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+                  {/* Found list */}
+                  <div style={{ border:"1px solid #a5d6a7", borderRadius:8, overflow:"hidden" }}>
+                    <div style={{ background:"#e8f5e9", padding:"10px 14px", fontWeight:"bold", fontSize:12, color:"#2e7d32" }}>
+                      ✓ Already in database ({checkResults.found.length})
+                    </div>
+                    <div style={{ maxHeight:380, overflowY:"auto" }}>
+                      {checkResults.found.length===0 ? (
+                        <div style={{ padding:"20px 14px", fontSize:12, color:"#aaa", textAlign:"center" }}>None found</div>
+                      ) : checkResults.found.map((r,i)=>(
+                        <div key={i} style={{ padding:"8px 14px", borderBottom:"1px solid #f0f0f0", cursor:"pointer" }}
+                          onClick={()=>{setSelectedCandidate(r.candidate);setView("database");}}>
+                          <div style={{ fontSize:12, color:"#333", fontWeight:"500" }}>{r.candidate.full_name||"—"}</div>
+                          <div style={{ fontSize:10, color:"#aaa", marginTop:1 }}>{r.file.name}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Missing list */}
+                  <div style={{ border:"1px solid #ef9a9a", borderRadius:8, overflow:"hidden" }}>
+                    <div style={{ background:"#ffebee", padding:"10px 14px", fontWeight:"bold", fontSize:12, color:"#c62828" }}>
+                      ✗ Not found — missing ({checkResults.missing.length})
+                    </div>
+                    <div style={{ maxHeight:380, overflowY:"auto" }}>
+                      {checkResults.missing.length===0 ? (
+                        <div style={{ padding:"20px 14px", fontSize:12, color:"#aaa", textAlign:"center" }}>All CVs are in the database! ✓</div>
+                      ) : checkResults.missing.map((r,i)=>(
+                        <div key={i} style={{ padding:"8px 14px", borderBottom:"1px solid #f0f0f0" }}>
+                          <div style={{ fontSize:12, color:"#c62828" }}>{r.file.name.replace(/\.pdf$/i,"")}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop:12, fontSize:11, color:"#aaa" }}>
+                  Matching is based on file names. Rename your CV files to include the candidate's full name for best accuracy.
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 

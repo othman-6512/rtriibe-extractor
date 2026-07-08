@@ -177,6 +177,13 @@ export default function App() {
   const [bulkCurrent, setBulkCurrent] = useState(0);
   const [bulkResults, setBulkResults] = useState([]);
   const [bulkDone, setBulkDone]     = useState(false);
+  const [bulkPaused, setBulkPaused] = useState(false);
+  const [bulkStats, setBulkStats]   = useState({ added:0, duplicates:0, failed:0 });
+  const [bulkStartTime, setBulkStartTime] = useState(0);
+  const [failedFiles, setFailedFiles] = useState([]);
+  const shouldPauseRef = useRef(false);
+  const addedNamesRef  = useRef(new Set());
+  const candidatesRef  = useRef([]);
   const [searchName, setSearchName] = useState("");
   const [filterLevel, setFilterLevel] = useState("");
   const [filterCurriculum, setFilterCurriculum] = useState("");
@@ -191,6 +198,9 @@ export default function App() {
   const [matchFilterInfo, setMatchFilterInfo] = useState("");
   const [selectedVacancyId, setSelectedVacancyId] = useState(null);
   const fileRef = useRef();
+
+  // Keep candidatesRef in sync
+  useEffect(() => { candidatesRef.current = candidates; }, [candidates]);
 
   // Load from Supabase on mount
   useEffect(() => {
@@ -317,22 +327,81 @@ export default function App() {
     setLoading(false);
   };
 
-  // Extract bulk
-  const extractBulk = async () => {
-    setLoading(true); setBulkCurrent(0); setBulkResults([]); setBulkDone(false);
-    for (let i=0; i<bulkFiles.length; i++) {
-      const file=bulkFiles[i]; setBulkCurrent(i+1);
+  // Duplicate checker
+  const isDuplicate = (parsed) => {
+    const name  = (parsed.full_name||"").toLowerCase().trim();
+    const email = (parsed.email||"").toLowerCase().trim();
+    if (name  && addedNamesRef.current.has(name))  return true;
+    if (email && addedNamesRef.current.has(email)) return true;
+    return candidatesRef.current.some(c => {
+      if (email && (c.email||"").toLowerCase().trim()===email) return true;
+      if (name  && (c.full_name||"").toLowerCase().trim()===name)  return true;
+      return false;
+    });
+  };
+
+  const getETA = (current, total, startTime) => {
+    if (!current||!startTime) return "";
+    const elapsed = Date.now()-startTime;
+    const remaining = (total-current)*(elapsed/current);
+    const mins = Math.floor(remaining/60000);
+    const secs = Math.floor((remaining%60000)/1000);
+    if (mins>0) return `~${mins}m ${secs}s left`;
+    return `~${secs}s left`;
+  };
+
+  // Core bulk extraction engine
+  const extractBulkFiles = async (files) => {
+    setLoading(true); setBulkCurrent(0); setBulkResults([]); setBulkDone(false); setBulkPaused(false);
+    setBulkStats({ added:0, duplicates:0, failed:0 });
+    shouldPauseRef.current = false;
+    addedNamesRef.current  = new Set();
+    const startTime = Date.now(); setBulkStartTime(startTime);
+    const localResults = [];
+
+    for (let i=0; i<files.length; i++) {
+      // Pause gate
+      while (shouldPauseRef.current) { await new Promise(r=>setTimeout(r,400)); }
+
+      const file = files[i]; setBulkCurrent(i+1);
       try {
         const base64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=()=>rej(new Error("Read failed")); r.readAsDataURL(file); });
         const content = [{ type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64 }},{ type:"text", text:"Extract all candidate information." }];
-        const raw = await callAPI({ model:"claude-sonnet-4-6", system:SYSTEM_PROMPT, messages:[{ role:"user", content }] });
+        const raw    = await callAPI({ model:"claude-sonnet-4-6", system:SYSTEM_PROMPT, messages:[{ role:"user", content }] });
         const parsed = JSON.parse(raw);
-        addCandidateSafe(parsed);
-        setBulkResults(prev=>[...prev,{ name:file.name, status:"success", fullName:parsed.full_name||"" }]);
-      } catch { setBulkResults(prev=>[...prev,{ name:file.name, status:"error" }]); }
+
+        if (isDuplicate(parsed)) {
+          localResults.push({ file, name:parsed.full_name||file.name.replace(/\.pdf$/i,""), status:"duplicate" });
+          setBulkResults([...localResults]);
+          setBulkStats(p=>({...p, duplicates:p.duplicates+1}));
+        } else {
+          addCandidateSafe(parsed);
+          const n=(parsed.full_name||"").toLowerCase().trim();
+          const e=(parsed.email||"").toLowerCase().trim();
+          if(n) addedNamesRef.current.add(n);
+          if(e) addedNamesRef.current.add(e);
+          localResults.push({ file, name:parsed.full_name||file.name.replace(/\.pdf$/i,""), status:"success" });
+          setBulkResults([...localResults]);
+          setBulkStats(p=>({...p, added:p.added+1}));
+        }
+      } catch {
+        localResults.push({ file, name:file.name.replace(/\.pdf$/i,""), status:"error" });
+        setBulkResults([...localResults]);
+        setBulkStats(p=>({...p, failed:p.failed+1}));
+      }
+
+      // Rate limit — 1.5s between requests
+      if (i<files.length-1) await new Promise(r=>setTimeout(r,1500));
     }
+
+    setFailedFiles(localResults.filter(r=>r.status==="error").map(r=>r.file));
     setBulkDone(true); setLoading(false);
   };
+
+  const extractBulk  = ()  => extractBulkFiles(bulkFiles);
+  const retryFailed  = ()  => { const f=[...failedFiles]; setFailedFiles([]); setBulkResults([]); setBulkDone(false); extractBulkFiles(f); };
+  const pauseBulk    = ()  => { shouldPauseRef.current=true;  setBulkPaused(true);  };
+  const resumeBulk   = ()  => { shouldPauseRef.current=false; setBulkPaused(false); };
 
   // Match vacancy
   const matchVacancy = async () => {
@@ -353,6 +422,8 @@ export default function App() {
   const resetExtract = () => {
     setCvText(""); setPdfBase64(null); setFileName(""); setResult(null); setError(""); setJustAdded(false);
     setBulkFiles([]); setBulkResults([]); setBulkDone(false); setBulkCurrent(0);
+    setBulkPaused(false); setBulkStats({ added:0, duplicates:0, failed:0 }); setFailedFiles([]);
+    shouldPauseRef.current = false;
     if (fileRef.current) fileRef.current.value="";
   };
 
@@ -450,57 +521,105 @@ export default function App() {
                   )}
                   {isBulkMode&&(
                     <div>
+                      {/* Header */}
                       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
-                        <div style={{ fontSize:13, fontWeight:"bold" }}>{bulkFiles.length} CVs selected <span style={{ fontSize:11, color:"#aaa", fontWeight:"normal" }}>(max 50)</span></div>
-                        {!loading&&<button onClick={()=>fileRef.current.click()} style={btn("#fff","#555",{border:"1px solid #ccc",padding:"5px 12px",fontWeight:"normal"})}>Change</button>}
+                        <div style={{ fontSize:13, fontWeight:"bold", color:"#333" }}>
+                          {bulkFiles.length} CVs selected
+                          <span style={{ fontSize:11, color:"#aaa", fontWeight:"normal", marginLeft:8 }}>(max 50)</span>
+                        </div>
+                        {!loading&&!bulkPaused&&<button onClick={()=>fileRef.current.click()} style={btn("#fff","#555",{border:"1px solid #ccc",padding:"5px 12px",fontWeight:"normal"})}>Change files</button>}
                       </div>
-                      {loading&&(
-                        <div style={{ marginBottom:12 }}>
-                          <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:"#555", marginBottom:6 }}>
-                            <span>Extracting {bulkCurrent} of {bulkFiles.length}...</span>
-                            <span style={{ fontWeight:"bold" }}>{progress}%</span>
+
+                      {/* Active progress */}
+                      {(loading||bulkPaused)&&(
+                        <div style={{ marginBottom:12, padding:"12px 14px", background:"#f9f9f9", borderRadius:8, border:"1px solid #eee" }}>
+                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                            <span style={{ fontSize:12, fontWeight:"bold", color:"#333" }}>
+                              {bulkPaused?"⏸ Paused":"⟳ Processing"} {bulkCurrent} of {bulkFiles.length}
+                            </span>
+                            <span style={{ fontSize:11, color:"#888" }}>{getETA(bulkCurrent, bulkFiles.length, bulkStartTime)}</span>
                           </div>
-                          <div style={{ background:"#eee", borderRadius:6, height:10, overflow:"hidden" }}>
-                            <div style={{ background:RED, width:`${progress}%`, height:"100%", borderRadius:6, transition:"width 0.4s" }}/>
+                          <div style={{ background:"#e0e0e0", borderRadius:6, height:8, overflow:"hidden", marginBottom:10 }}>
+                            <div style={{ background:bulkPaused?"#f57f17":RED, width:`${progress}%`, height:"100%", borderRadius:6, transition:"width 0.4s" }}/>
+                          </div>
+                          <div style={{ display:"flex", gap:16, fontSize:11, marginBottom:10 }}>
+                            <span style={{ color:"#2e7d32", fontWeight:"bold" }}>✓ Added: {bulkStats.added}</span>
+                            <span style={{ color:"#f57f17", fontWeight:"bold" }}>⚠ Duplicate: {bulkStats.duplicates}</span>
+                            <span style={{ color:"#c00", fontWeight:"bold" }}>✗ Failed: {bulkStats.failed}</span>
+                          </div>
+                          <div style={{ display:"flex", gap:8 }}>
+                            {!bulkPaused
+                              ? <button onClick={pauseBulk} style={btn("#fff8e1","#f57f17",{border:"1px solid #ffe082",padding:"5px 14px",fontWeight:"normal",fontSize:12})}>⏸ Pause</button>
+                              : <button onClick={resumeBulk} style={btn("#e8f5e9","#2e7d32",{border:"1px solid #a5d6a7",padding:"5px 14px",fontWeight:"normal",fontSize:12})}>▶ Resume</button>
+                            }
                           </div>
                         </div>
                       )}
+
+                      {/* Done summary */}
                       {bulkDone&&(
-                        <div style={{ marginBottom:12, padding:"10px 14px", borderRadius:6, background:errorCount===0?"#e8f5e9":"#fff8e1", border:`1px solid ${errorCount===0?"#a5d6a7":"#ffe082"}` }}>
-                          <div style={{ fontWeight:"bold", fontSize:13, color:errorCount===0?"#2e7d32":"#f57f17" }}>{errorCount===0?`✓ All ${successCount} CVs extracted!`:`✓ ${successCount} done · ${errorCount} failed`}</div>
+                        <div style={{ marginBottom:12, padding:"12px 14px", borderRadius:8, background:bulkStats.failed===0?"#e8f5e9":"#fff8e1", border:`1px solid ${bulkStats.failed===0?"#a5d6a7":"#ffe082"}` }}>
+                          <div style={{ fontWeight:"bold", fontSize:13, color:bulkStats.failed===0?"#2e7d32":"#f57f17", marginBottom:6 }}>
+                            {bulkStats.failed===0?"✓ All done!":"⚠ Completed with some failures"}
+                          </div>
+                          <div style={{ display:"flex", gap:16, fontSize:12 }}>
+                            <span style={{ color:"#2e7d32" }}>✓ Added: <b>{bulkStats.added}</b></span>
+                            <span style={{ color:"#f57f17" }}>⚠ Duplicate: <b>{bulkStats.duplicates}</b></span>
+                            <span style={{ color:"#c00" }}>✗ Failed: <b>{bulkStats.failed}</b></span>
+                          </div>
+                          {failedFiles.length>0&&(
+                            <button onClick={retryFailed} style={btn("#c00","#fff",{marginTop:10,padding:"6px 14px",fontSize:12})}>
+                              🔁 Retry {failedFiles.length} failed CV{failedFiles.length!==1?"s":""}
+                            </button>
+                          )}
                         </div>
                       )}
-                      <div style={{ maxHeight:200, overflowY:"auto", border:"1px solid #eee", borderRadius:6 }}>
-                        {bulkFiles.map((file,i)=>{
-                          const r=bulkResults[i]; const isCur=loading&&bulkCurrent===i+1;
-                          return (
-                            <div key={i} style={{ display:"flex", alignItems:"center", padding:"6px 12px", borderBottom:"1px solid #f5f5f5", background:isCur?"#fff8f8":"transparent" }}>
-                              <div style={{ width:22, marginRight:10, fontSize:13 }}>
-                                {!r&&!isCur&&<span style={{ color:"#ddd" }}>○</span>}
-                                {isCur&&<span style={{ color:RED }}>⟳</span>}
-                                {r?.status==="success"&&<span style={{ color:"#2e7d32" }}>✓</span>}
-                                {r?.status==="error"&&<span style={{ color:"#c00" }}>✗</span>}
+
+                      {/* Scrollable log */}
+                      {bulkResults.length>0&&(
+                        <div style={{ maxHeight:220, overflowY:"auto", border:"1px solid #eee", borderRadius:6 }}>
+                          {bulkResults.map((r,i)=>(
+                            <div key={i} style={{ display:"flex", alignItems:"center", padding:"6px 12px", borderBottom:"1px solid #f5f5f5" }}>
+                              <div style={{ width:20, marginRight:10, fontSize:13, textAlign:"center" }}>
+                                {r.status==="success"&&<span style={{ color:"#2e7d32" }}>✓</span>}
+                                {r.status==="duplicate"&&<span style={{ color:"#f57f17" }}>⚠</span>}
+                                {r.status==="error"&&<span style={{ color:"#c00" }}>✗</span>}
                               </div>
-                              <div style={{ flex:1, fontSize:11, color:r?.status==="success"?"#333":"#888", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                                {r?.status==="success"&&r.fullName?r.fullName:file.name.replace(/\.pdf$/i,"")}
+                              <div style={{ flex:1, fontSize:11, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+                                color:r.status==="success"?"#333":r.status==="duplicate"?"#b06000":"#c00" }}>
+                                {r.name}
+                              </div>
+                              <div style={{ fontSize:10, color:"#aaa", marginLeft:8, flexShrink:0 }}>
+                                {r.status==="duplicate"?"already in system":r.status==="error"?"failed":""}
                               </div>
                             </div>
-                          );
-                        })}
-                      </div>
+                          ))}
+                          {/* Pending files */}
+                          {loading&&bulkFiles.slice(bulkCurrent).map((file,i)=>(
+                            <div key={`p${i}`} style={{ display:"flex", alignItems:"center", padding:"6px 12px", borderBottom:"1px solid #f5f5f5" }}>
+                              <div style={{ width:20, marginRight:10, fontSize:13, textAlign:"center" }}>
+                                {i===0?<span style={{ color:RED }}>⟳</span>:<span style={{ color:"#ddd" }}>○</span>}
+                              </div>
+                              <div style={{ flex:1, fontSize:11, color:"#bbb", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                                {file.name.replace(/\.pdf$/i,"")}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                   <input ref={fileRef} type="file" accept=".pdf" multiple onChange={handleFile} style={{ display:"none" }}/>
                 </>
               )}
               {error&&<div style={{ marginTop:10, fontSize:12, color:RED, background:"#fff5f5", border:"1px solid #fcc", padding:"8px 12px", borderRadius:6 }}>{error}</div>}
-              {!bulkDone&&(
+              {!bulkDone&&!bulkPaused&&(
                 <button onClick={isBulkMode?extractBulk:extract} disabled={loading} style={btn(loading?"#aaa":RED,"#fff",{marginTop:14,fontSize:13,padding:"9px 22px",cursor:loading?"not-allowed":"pointer"})}>
-                  {loading?(isBulkMode?`Extracting ${bulkCurrent}/${bulkFiles.length}...`:"Extracting..."):(isBulkMode?`Extract All ${bulkFiles.length} CVs`:"Extract candidate data")}
+                  {loading?(isBulkMode?`Processing ${bulkCurrent} of ${bulkFiles.length}...`:"Extracting..."):(isBulkMode?`Extract All ${bulkFiles.length} CVs`:"Extract candidate data")}
                 </button>
               )}
               {bulkDone&&(
-                <div style={{ display:"flex", gap:10, marginTop:14 }}>
+                <div style={{ display:"flex", gap:10, marginTop:14, flexWrap:"wrap" }}>
                   <button onClick={()=>setView("database")} style={btn(RED,"#fff",{fontSize:13,padding:"9px 22px"})}>View database ({candidates.length}) →</button>
                   <button onClick={resetExtract} style={btn("#fff","#555",{border:"1px solid #ccc",fontSize:13,padding:"9px 22px"})}>Extract more</button>
                 </div>

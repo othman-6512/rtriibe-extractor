@@ -9,13 +9,35 @@ const sb = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KE
 const RED = "#C00000";
 
 const SYSTEM_PROMPT = `You are an expert education recruitment assistant for rTriibe, a UK-founded agency placing teachers in UAE international schools.
-Extract structured candidate information from the provided CV/resume.
+Extract ALL structured candidate information from the provided CV/resume.
 Return ONLY a valid JSON object with exactly these keys (use "" for any field not found):
-full_name, nationality, email, phone, location, degree_subject, degree_university,
-teaching_qualification, qts_holder, additional_certs, years_experience, teaching_level,
-subject_specialism, current_last_school, current_last_role, curriculum,
-available_from, notice_period, role_type, notes.
-Values: qts_holder "Yes"/"No"/"In Progress"; teaching_level "EYFS"/"Primary"/"Secondary"/"All Through"/"SEN"/"LSA"/"Leadership"; curriculum "British"/"IB"/"American"/"CBSE"/"MOE"/"French"/"Multiple"/"Unknown"; role_type "Permanent"/"Supply"/"Both"/"Tutor"/"LSA".
+full_name, nationality, email, phone, location,
+degree_subject, degree_university, degree_level, degree_in_education,
+teaching_qualification, qts_holder, additional_certs,
+years_experience, uae_experience_years, outside_uae_experience_years,
+teaching_level, subject_specialism, age_groups_taught, key_stages,
+current_last_school, current_last_role, schools_list,
+experience_summary, curriculum, available_from, notice_period, role_type,
+visa_status, salary_expectation, employment_gaps, notes.
+
+Values:
+- qts_holder: "Yes"/"No"/"In Progress"
+- teaching_level: "EYFS"/"Primary"/"Secondary"/"All Through"/"SEN"/"LSA"/"Leadership"
+- curriculum: "British"/"IB"/"American"/"CBSE"/"MOE"/"French"/"Multiple"/"Unknown"
+- role_type: "Permanent"/"Supply"/"Both"/"Tutor"/"LSA"
+- degree_level: "Bachelor"/"Master"/"PhD"/"Diploma"/"Other"
+- degree_in_education: "Yes"/"No"/"Partial"
+- visa_status: "Employment Visa"/"Visit Visa"/"Own Visa"/"Cancelled"/"Unknown"
+- uae_experience_years: number as string (years worked in UAE only)
+- outside_uae_experience_years: number as string (years worked outside UAE)
+- age_groups_taught: comma-separated e.g. "Early Years, KS1, KS2"
+- key_stages: comma-separated e.g. "KS3, KS4, A-Level, IB DP"
+- schools_list: comma-separated list of ALL schools/institutions ever worked at
+- experience_summary: 3-4 sentences describing career history, roles, subjects, responsibilities and achievements
+- salary_expectation: if mentioned in CV, otherwise ""
+- employment_gaps: "No" or "Yes — [brief reason if known]"
+- notes: visa/work permit issues, PGCEi vs QTS flag, strengths, concerns, red flags
+- candidate_debrief: 4-5 sentence professional summary covering: (1) qualifications and teaching credentials, (2) total experience and UAE experience with school names, (3) subject/level/curriculum strengths, (4) key standout qualities, (5) any concerns or flags and what type of role/school they suit best. Write it as a recruiter would brief a client.
 Return ONLY the JSON object. No markdown, no backticks, no other text.`;
 
 const MATCH_PROMPT = `You are an expert education recruitment consultant at rTriibe, placing teachers in UAE international schools.
@@ -28,13 +50,22 @@ No markdown, no backticks, no other text.`;
 
 const DETAIL_FIELDS = [
   ["full_name","Full Name"],["nationality","Nationality"],["email","Email"],["phone","Phone"],["location","Location"],
+  ["visa_status","Visa Status"],
   ["degree_subject","Degree Subject"],["degree_university","Degree University"],
+  ["degree_level","Degree Level"],["degree_in_education","Degree in Education"],
   ["teaching_qualification","Teaching Qualification"],["qts_holder","QTS Holder"],
-  ["additional_certs","Additional Certifications"],["years_experience","Years of Experience"],
+  ["additional_certs","Additional Certifications"],
+  ["years_experience","Total Years Experience"],
+  ["uae_experience_years","UAE Experience (yrs)"],["outside_uae_experience_years","Outside UAE (yrs)"],
   ["teaching_level","Teaching Level"],["subject_specialism","Subject / Specialism"],
+  ["age_groups_taught","Age Groups Taught"],["key_stages","Key Stages"],
   ["current_last_school","Current / Last School"],["current_last_role","Current / Last Role"],
+  ["schools_list","All Schools Worked At"],
+  ["experience_summary","Experience Summary"],
   ["curriculum","Curriculum"],["available_from","Available From"],
   ["notice_period","Notice Period"],["role_type","Role Type"],
+  ["salary_expectation","Salary Expectation"],["employment_gaps","Employment Gaps"],
+  ["candidate_debrief","Candidate Debrief"],
 ];
 
 const CATEGORIES = [
@@ -69,6 +100,14 @@ const CATEGORIES = [
     { key:"available_from", label:"Available From", width:100 },
     { key:"notice_period", label:"Notice", width:80 },
     { key:"role_type", label:"Role Type", width:95 },
+  ]},
+  { label:"PROFILE", icon:"📊", color:"#4527A0", cols:[
+    { key:"uae_experience_years",      label:"UAE Exp",      width:65  },
+    { key:"outside_uae_experience_years", label:"Out UAE",   width:65  },
+    { key:"visa_status",               label:"Visa Status",  width:110 },
+    { key:"degree_level",              label:"Degree",       width:80  },
+    { key:"age_groups_taught",         label:"Age Groups",   width:120 },
+    { key:"salary_expectation",        label:"Salary Exp",   width:100 },
   ]},
   { label:"NOTES", icon:"📝", color:"#880E4F", cols:[
     { key:"notes", label:"Notes / Flags", width:190 },
@@ -178,7 +217,8 @@ export default function App() {
   const [bulkResults, setBulkResults] = useState([]);
   const [bulkDone, setBulkDone]     = useState(false);
   const [bulkPaused, setBulkPaused] = useState(false);
-  const [bulkStats, setBulkStats]   = useState({ added:0, duplicates:0, failed:0 });
+  const [bulkStats, setBulkStats]   = useState({ added:0, updated:0, duplicates:0, failed:0 });
+  const [updateMode, setUpdateMode] = useState(false);
   const [bulkStartTime, setBulkStartTime] = useState(0);
   const [failedFiles, setFailedFiles] = useState([]);
   const shouldPauseRef = useRef(false);
@@ -331,6 +371,17 @@ export default function App() {
     setLoading(false);
   };
 
+  // Update existing candidate with new extracted data
+  const updateCandidate = (existing, newData) => {
+    const merged = { ...existing, ...newData, _id:existing._id, candidate_id:existing.candidate_id||"" };
+    setCandidates(prev => {
+      const updated = prev.map(c => c._id===existing._id ? merged : c);
+      dbUpsert("candidates", existing._id, merged);
+      return updated;
+    });
+    candidatesRef.current = candidatesRef.current.map(c => c._id===existing._id ? merged : c);
+  };
+
   // Duplicate checker
   const isDuplicate = (parsed) => {
     const name  = (parsed.full_name||"").toLowerCase().trim();
@@ -357,7 +408,7 @@ export default function App() {
   // Core bulk extraction engine
   const extractBulkFiles = async (files) => {
     setLoading(true); setBulkCurrent(0); setBulkResults([]); setBulkDone(false); setBulkPaused(false);
-    setBulkStats({ added:0, duplicates:0, failed:0 });
+    setBulkStats({ added:0, updated:0, duplicates:0, failed:0 });
     shouldPauseRef.current = false;
     addedNamesRef.current  = new Set();
     const startTime = Date.now(); setBulkStartTime(startTime);
@@ -374,7 +425,22 @@ export default function App() {
         const raw    = await callAPI({ model:"claude-sonnet-4-6", system:SYSTEM_PROMPT, messages:[{ role:"user", content }] });
         const parsed = JSON.parse(raw);
 
-        if (isDuplicate(parsed)) {
+        const existingCand = candidatesRef.current.find(c => {
+          const n=(parsed.full_name||"").toLowerCase().trim();
+          const e=(parsed.email||"").toLowerCase().trim();
+          if(e&&(c.email||"").toLowerCase().trim()===e) return true;
+          if(n&&(c.full_name||"").toLowerCase().trim()===n) return true;
+          if(n&&addedNamesRef.current.has(n)) return true;
+          if(e&&addedNamesRef.current.has(e)) return true;
+          return false;
+        });
+
+        if (existingCand && updateMode) {
+          updateCandidate(existingCand, parsed);
+          localResults.push({ file, name:parsed.full_name||file.name.replace(/\.pdf$/i,""), status:"updated" });
+          setBulkResults([...localResults]);
+          setBulkStats(p=>({...p, updated:p.updated+1}));
+        } else if (existingCand && !updateMode) {
           localResults.push({ file, name:parsed.full_name||file.name.replace(/\.pdf$/i,""), status:"duplicate" });
           setBulkResults([...localResults]);
           setBulkStats(p=>({...p, duplicates:p.duplicates+1}));
@@ -467,7 +533,7 @@ export default function App() {
     const missingFiles = checkResults.missing.map(r=>r.file);
     if (!missingFiles.length) return;
     setBulkFiles(missingFiles); setBulkResults([]); setBulkDone(false); setBulkCurrent(0);
-    setBulkPaused(false); setBulkStats({ added:0, duplicates:0, failed:0 }); setFailedFiles([]);
+    setBulkPaused(false); setBulkStats({ added:0, updated:0, duplicates:0, failed:0 }); setFailedFiles([]);
     setView("extract"); setMode("pdf");
     setTimeout(() => extractBulkFiles(missingFiles), 100);
   };
@@ -475,16 +541,16 @@ export default function App() {
   const resetExtract = () => {
     setCvText(""); setPdfBase64(null); setFileName(""); setResult(null); setError(""); setJustAdded(false);
     setBulkFiles([]); setBulkResults([]); setBulkDone(false); setBulkCurrent(0);
-    setBulkPaused(false); setBulkStats({ added:0, duplicates:0, failed:0 }); setFailedFiles([]);
+    setBulkPaused(false); setBulkStats({ added:0, updated:0, duplicates:0, failed:0 }); setFailedFiles([]);
     shouldPauseRef.current = false;
     if (fileRef.current) fileRef.current.value="";
   };
 
   const downloadExcel = () => {
-    const headers = ["Candidate ID","Full Name","Nationality","Email","Phone","Location","Degree Subject","Degree University","Teaching Qual","QTS Holder","Additional Certs","Years Exp","Teaching Level","Subject / Specialism","Current/Last School","Current/Last Role","Curriculum","Available From","Notice Period","Role Type","CV Built","CV Code","Source","Status","Placed At","Notes"];
-    const rows = candidates.map(c=>[c.candidate_id||"",c.full_name||"",c.nationality||"",c.email||"",c.phone||"",c.location||"",c.degree_subject||"",c.degree_university||"",c.teaching_qualification||"",c.qts_holder||"",c.additional_certs||"",c.years_experience||"",c.teaching_level||"",c.subject_specialism||"",c.current_last_school||"",c.current_last_role||"",c.curriculum||"",c.available_from||"",c.notice_period||"",c.role_type||"","Yes","","","New","",c.notes||""]);
+    const headers = ["Candidate ID","Full Name","Nationality","Email","Phone","Location","Visa Status","Degree Subject","Degree University","Degree Level","Degree in Education","Teaching Qual","QTS Holder","Additional Certs","Total Yrs Exp","UAE Exp (yrs)","Outside UAE (yrs)","Teaching Level","Subject / Specialism","Age Groups Taught","Key Stages","Current/Last School","Current/Last Role","All Schools","Experience Summary","Curriculum","Available From","Notice Period","Role Type","Salary Expectation","Employment Gaps","Candidate Debrief","CV Built","CV Code","Source","Status","Placed At","Notes"];
+    const rows = candidates.map(c=>[c.candidate_id||"",c.full_name||"",c.nationality||"",c.email||"",c.phone||"",c.location||"",c.visa_status||"",c.degree_subject||"",c.degree_university||"",c.degree_level||"",c.degree_in_education||"",c.teaching_qualification||"",c.qts_holder||"",c.additional_certs||"",c.years_experience||"",c.uae_experience_years||"",c.outside_uae_experience_years||"",c.teaching_level||"",c.subject_specialism||"",c.age_groups_taught||"",c.key_stages||"",c.current_last_school||"",c.current_last_role||"",c.schools_list||"",c.experience_summary||"",c.curriculum||"",c.available_from||"",c.notice_period||"",c.role_type||"",c.salary_expectation||"",c.employment_gaps||"",c.candidate_debrief||"","Yes","","","New","",c.notes||""]);
     const ws = XLSX.utils.aoa_to_sheet([headers,...rows]);
-    ws["!cols"]=[{wch:15},{wch:22},{wch:14},{wch:28},{wch:16},{wch:16},{wch:18},{wch:22},{wch:18},{wch:11},{wch:20},{wch:10},{wch:16},{wch:22},{wch:24},{wch:22},{wch:18},{wch:15},{wch:14},{wch:14},{wch:10},{wch:12},{wch:15},{wch:13},{wch:22},{wch:45}];
+    ws["!cols"]=[{wch:14},{wch:22},{wch:14},{wch:26},{wch:15},{wch:16},{wch:16},{wch:18},{wch:22},{wch:12},{wch:14},{wch:18},{wch:10},{wch:20},{wch:10},{wch:10},{wch:12},{wch:16},{wch:22},{wch:20},{wch:20},{wch:24},{wch:22},{wch:35},{wch:45},{wch:18},{wch:15},{wch:14},{wch:14},{wch:16},{wch:20},{wch:60},{wch:10},{wch:12},{wch:15},{wch:13},{wch:22},{wch:45}];
     const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Candidates"); XLSX.writeFile(wb,"rTriibe_Candidate_Database.xlsx");
   };
 
@@ -595,8 +661,9 @@ export default function App() {
                           <div style={{ background:"#e0e0e0", borderRadius:6, height:8, overflow:"hidden", marginBottom:10 }}>
                             <div style={{ background:bulkPaused?"#f57f17":RED, width:`${progress}%`, height:"100%", borderRadius:6, transition:"width 0.4s" }}/>
                           </div>
-                          <div style={{ display:"flex", gap:16, fontSize:11, marginBottom:10 }}>
+                          <div style={{ display:"flex", gap:14, fontSize:11, marginBottom:10, flexWrap:"wrap" }}>
                             <span style={{ color:"#2e7d32", fontWeight:"bold" }}>✓ Added: {bulkStats.added}</span>
+                            {updateMode&&<span style={{ color:"#1565C0", fontWeight:"bold" }}>🔄 Updated: {bulkStats.updated}</span>}
                             <span style={{ color:"#f57f17", fontWeight:"bold" }}>⚠ Duplicate: {bulkStats.duplicates}</span>
                             <span style={{ color:"#c00", fontWeight:"bold" }}>✗ Failed: {bulkStats.failed}</span>
                           </div>
@@ -615,8 +682,9 @@ export default function App() {
                           <div style={{ fontWeight:"bold", fontSize:13, color:bulkStats.failed===0?"#2e7d32":"#f57f17", marginBottom:6 }}>
                             {bulkStats.failed===0?"✓ All done!":"⚠ Completed with some failures"}
                           </div>
-                          <div style={{ display:"flex", gap:16, fontSize:12 }}>
+                          <div style={{ display:"flex", gap:14, fontSize:12, flexWrap:"wrap" }}>
                             <span style={{ color:"#2e7d32" }}>✓ Added: <b>{bulkStats.added}</b></span>
+                            {bulkStats.updated>0&&<span style={{ color:"#1565C0" }}>🔄 Updated: <b>{bulkStats.updated}</b></span>}
                             <span style={{ color:"#f57f17" }}>⚠ Duplicate: <b>{bulkStats.duplicates}</b></span>
                             <span style={{ color:"#c00" }}>✗ Failed: <b>{bulkStats.failed}</b></span>
                           </div>
@@ -635,15 +703,16 @@ export default function App() {
                             <div key={i} style={{ display:"flex", alignItems:"center", padding:"6px 12px", borderBottom:"1px solid #f5f5f5" }}>
                               <div style={{ width:20, marginRight:10, fontSize:13, textAlign:"center" }}>
                                 {r.status==="success"&&<span style={{ color:"#2e7d32" }}>✓</span>}
+                                {r.status==="updated"&&<span style={{ color:"#1565C0" }}>🔄</span>}
                                 {r.status==="duplicate"&&<span style={{ color:"#f57f17" }}>⚠</span>}
                                 {r.status==="error"&&<span style={{ color:"#c00" }}>✗</span>}
                               </div>
                               <div style={{ flex:1, fontSize:11, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
-                                color:r.status==="success"?"#333":r.status==="duplicate"?"#b06000":"#c00" }}>
+                                color:r.status==="success"?"#333":r.status==="updated"?"#1565C0":r.status==="duplicate"?"#b06000":"#c00" }}>
                                 {r.name}
                               </div>
                               <div style={{ fontSize:10, color:"#aaa", marginLeft:8, flexShrink:0 }}>
-                                {r.status==="duplicate"?"already in system":r.status==="error"?"failed":""}
+                                {r.status==="updated"?"updated":r.status==="duplicate"?"already in system":r.status==="error"?"failed":""}
                               </div>
                             </div>
                           ))}
@@ -666,9 +735,17 @@ export default function App() {
                 </>
               )}
               {error&&<div style={{ marginTop:10, fontSize:12, color:RED, background:"#fff5f5", border:"1px solid #fcc", padding:"8px 12px", borderRadius:6 }}>{error}</div>}
+              {isBulkMode&&!loading&&!bulkPaused&&!bulkDone&&(
+                <div style={{ marginTop:14, padding:"10px 14px", background:"#e3f2fd", border:"1px solid #90caf9", borderRadius:6, display:"flex", alignItems:"center", gap:12 }}>
+                  <input type="checkbox" id="updateMode" checked={updateMode} onChange={e=>setUpdateMode(e.target.checked)} style={{ width:16, height:16, cursor:"pointer" }}/>
+                  <label htmlFor="updateMode" style={{ fontSize:12, color:"#1565C0", cursor:"pointer", userSelect:"none" }}>
+                    <b>Update mode</b> — re-extract existing candidates and add new fields (use this when re-uploading to update records)
+                  </label>
+                </div>
+              )}
               {!bulkDone&&!bulkPaused&&(
-                <button onClick={isBulkMode?extractBulk:extract} disabled={loading} style={btn(loading?"#aaa":RED,"#fff",{marginTop:14,fontSize:13,padding:"9px 22px",cursor:loading?"not-allowed":"pointer"})}>
-                  {loading?(isBulkMode?`Processing ${bulkCurrent} of ${bulkFiles.length}...`:"Extracting..."):(isBulkMode?`Extract All ${bulkFiles.length} CVs`:"Extract candidate data")}
+                <button onClick={isBulkMode?extractBulk:extract} disabled={loading} style={btn(loading?"#aaa":RED,"#fff",{marginTop:10,fontSize:13,padding:"9px 22px",cursor:loading?"not-allowed":"pointer"})}>
+                  {loading?(isBulkMode?`Processing ${bulkCurrent} of ${bulkFiles.length}...`:"Extracting..."):(isBulkMode?`${updateMode?"Update":"Extract"} All ${bulkFiles.length} CVs`:"Extract candidate data")}
                 </button>
               )}
               {bulkDone&&(
@@ -742,9 +819,15 @@ export default function App() {
               </div>
               <div style={{ background:"#fffbf0", border:"1px solid #ffe082", borderRadius:6, padding:"8px 14px", marginBottom:16, fontSize:11, color:"#b07d00" }}>✏️ Availability fields are editable below</div>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 32px" }}>
-                {DETAIL_FIELDS.map(([key,label])=>renderDetailField(key,label))}
+                {DETAIL_FIELDS.filter(([key])=>key!=="candidate_debrief"&&key!=="notes").map(([key,label])=>renderDetailField(key,label))}
               </div>
-              {selectedCandidate.notes&&<div style={{ marginTop:16, padding:"12px 16px", borderLeft:`3px solid ${RED}`, background:"#fff5f5" }}><div style={{ fontSize:10, color:"#999", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.5px" }}>Notes / flags</div><div style={{ fontSize:12, color:"#a00", lineHeight:1.6 }}>{selectedCandidate.notes}</div></div>}
+              {selectedCandidate.candidate_debrief&&(
+                <div style={{ marginTop:16, padding:"12px 16px", background:"#f3e5f5", border:"1px solid #ce93d8", borderRadius:8 }}>
+                  <div style={{ fontSize:10, color:"#7b1fa2", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.5px", fontWeight:"bold" }}>📋 Candidate Debrief</div>
+                  <div style={{ fontSize:12, color:"#4a0072", lineHeight:1.7 }}>{selectedCandidate.candidate_debrief}</div>
+                </div>
+              )}
+              {selectedCandidate.notes&&<div style={{ marginTop:12, padding:"12px 16px", borderLeft:`3px solid ${RED}`, background:"#fff5f5" }}><div style={{ fontSize:10, color:"#999", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.5px" }}>Notes / flags</div><div style={{ fontSize:12, color:"#a00", lineHeight:1.6 }}>{selectedCandidate.notes}</div></div>}
             </div>
           ) : (
             <div style={{ background:"#fff", borderRadius:8, padding:"20px 24px", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>

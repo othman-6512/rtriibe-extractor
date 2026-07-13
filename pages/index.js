@@ -424,7 +424,7 @@ export default function App() {
       try {
         const base64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=()=>rej(new Error("Read failed")); r.readAsDataURL(file); });
         const content = [{ type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64 }},{ type:"text", text:"Extract all candidate information." }];
-        const raw    = await callAPIBulk({ model:"claude-sonnet-4-6", system:SYSTEM_PROMPT, messages:[{ role:"user", content }] });
+        const raw    = await callAPIBulk({ model:"claude-haiku-4-5-20251001", system:SYSTEM_PROMPT, messages:[{ role:"user", content }] });
         const parsed = JSON.parse(raw);
 
         const existingCand = candidatesRef.current.find(c => {
@@ -462,8 +462,8 @@ export default function App() {
         setBulkStats(p=>({...p, failed:p.failed+1}));
       }
 
-      // Rate limit delay — 4s between requests (prevents token rate limit)
-      if (i<files.length-1) await new Promise(r=>setTimeout(r,4000));
+      // Rate limit delay — 2s between requests (haiku has higher limits)
+      if (i<files.length-1) await new Promise(r=>setTimeout(r,2000));
     }
 
     setFailedFiles(localResults.filter(r=>r.status==="error").map(r=>r.file));
@@ -856,10 +856,14 @@ export default function App() {
                 <select value={filterRoleType} onChange={e=>setFilterRoleType(e.target.value)} style={selStyle}><option value="">All Role Types</option>{roleTypes.map(r=><option key={r} value={r}>{r}</option>)}</select>
                 {hasFilters&&<button onClick={()=>{setSearchName("");setFilterLevel("");setFilterCurriculum("");setFilterQTS("");setFilterRoleType("");}} style={btn("#fff","#c00",{border:"1px solid #fcc",padding:"5px 12px",fontWeight:"normal",fontSize:12})}>✕ Clear</button>}
               </div>
-              <div ref={tableRef} style={{ overflowX:"auto", border:"1px solid #e0e0e0", borderRadius:6, WebkitOverflowScrolling:"touch" }}>
+              <div style={{ display:"flex", justifyContent:"flex-end", gap:6, marginBottom:6 }}>
+                <button onClick={()=>{ if(tableRef.current) tableRef.current.scrollLeft-=350; }} style={{ background:"#f5f5f5", border:"1px solid #ddd", borderRadius:6, padding:"5px 14px", fontSize:12, cursor:"pointer", color:"#555", fontFamily:"Arial" }}>◀ Left</button>
+                <button onClick={()=>{ if(tableRef.current) tableRef.current.scrollLeft+=350; }} style={{ background:"#f5f5f5", border:"1px solid #ddd", borderRadius:6, padding:"5px 14px", fontSize:12, cursor:"pointer", color:"#555", fontFamily:"Arial" }}>Right ▶</button>
+              </div>
+              <div ref={tableRef} style={{ overflowX:"auto", overflowY:"auto", maxHeight:"65vh", border:"1px solid #e0e0e0", borderRadius:6, WebkitOverflowScrolling:"touch" }}>
                 <table style={{ borderCollapse:"collapse", fontSize:11, width:TABLE_W, tableLayout:"fixed" }}>
                   <colgroup>{ALL_COLS.map(col=><col key={col.key} width={col.width}/>)}<col width={38}/></colgroup>
-                  <thead>
+                  <thead style={{ position:"sticky", top:0, zIndex:3 }}>
                     <tr>{CATEGORIES.map(cat=><th key={cat.label} colSpan={cat.cols.length} style={{ background:cat.color, color:"#fff", padding:"7px 10px", textAlign:"left", fontWeight:"bold", fontSize:10, borderRight:"2px solid rgba(255,255,255,0.3)", whiteSpace:"nowrap" }}>{cat.icon} {cat.label}</th>)}<th style={{ background:"#263238" }}></th></tr>
                     <tr style={{ background:"#f5f5f5" }}>{ALL_COLS.map(col=><th key={col.key} style={{ padding:"6px 8px", textAlign:"left", fontSize:10, fontWeight:"bold", color:"#555", borderBottom:"2px solid #ddd", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{col.label}</th>)}<th style={{ borderBottom:"2px solid #ddd" }}></th></tr>
                   </thead>

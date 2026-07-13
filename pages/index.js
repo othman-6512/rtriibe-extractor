@@ -243,6 +243,8 @@ export default function App() {
   const [checkDone, setCheckDone]       = useState(false);
   const fileRef      = useRef();
   const checkFileRef = useRef();
+  const tableRef     = useRef();
+  const scrollTable  = (dir) => { if(tableRef.current) tableRef.current.scrollLeft += dir*300; };
 
   // Keep candidatesRef in sync
   useEffect(() => { candidatesRef.current = candidates; }, [candidates]);
@@ -855,7 +857,12 @@ export default function App() {
                 <select value={filterRoleType} onChange={e=>setFilterRoleType(e.target.value)} style={selStyle}><option value="">All Role Types</option>{roleTypes.map(r=><option key={r} value={r}>{r}</option>)}</select>
                 {hasFilters&&<button onClick={()=>{setSearchName("");setFilterLevel("");setFilterCurriculum("");setFilterQTS("");setFilterRoleType("");}} style={btn("#fff","#c00",{border:"1px solid #fcc",padding:"5px 12px",fontWeight:"normal",fontSize:12})}>✕ Clear</button>}
               </div>
-              <div style={{ overflowX:"auto", border:"1px solid #e0e0e0", borderRadius:6 }}>
+              <div style={{ position:"relative" }}>
+                <div style={{ display:"flex", justifyContent:"flex-end", gap:6, marginBottom:6 }}>
+                  <button onClick={()=>scrollTable(-1)} style={{ background:"#f5f5f5", border:"1px solid #ddd", borderRadius:6, padding:"4px 12px", fontSize:13, cursor:"pointer", color:"#555" }}>← Scroll left</button>
+                  <button onClick={()=>scrollTable(1)}  style={{ background:"#f5f5f5", border:"1px solid #ddd", borderRadius:6, padding:"4px 12px", fontSize:13, cursor:"pointer", color:"#555" }}>Scroll right →</button>
+                </div>
+              <div ref={tableRef} style={{ overflowX:"auto", border:"1px solid #e0e0e0", borderRadius:6 }}>
                 <table style={{ borderCollapse:"collapse", fontSize:11, width:TABLE_W, tableLayout:"fixed" }}>
                   <colgroup>{ALL_COLS.map(col=><col key={col.key} width={col.width}/>)}<col width={38}/></colgroup>
                   <thead>
@@ -882,7 +889,8 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-              <div style={{ marginTop:10, fontSize:11, color:"#aaa" }}>Scroll right to see all fields. Click any row to view & edit.</div>
+              </div></div>
+              <div style={{ marginTop:10, fontSize:11, color:"#aaa" }}>Use scroll buttons above or drag the scrollbar below the table to see all fields. Click any row to view & edit.</div>
             </div>
           )}
         </div>

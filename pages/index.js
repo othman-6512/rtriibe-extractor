@@ -887,9 +887,8 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-              </div>
               <div style={{ marginTop:8, fontSize:11, color:"#aaa", display:"flex", alignItems:"center", gap:8 }}>
-                <span style={{ color:"#999" }}>◀ ▶</span> Scroll the table left and right to see all fields · Click any row to view &amp; edit
+                <span style={{ color:"#999" }}>◀ ▶</span> Scroll the table left and right to see all fields · Click any row to view and edit
               </div>
             </div>
           )}

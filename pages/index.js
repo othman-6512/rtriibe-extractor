@@ -221,6 +221,7 @@ export default function App() {
   const [updateMode, setUpdateMode] = useState(false);
   const [bulkStartTime, setBulkStartTime] = useState(0);
   const [failedFiles, setFailedFiles] = useState([]);
+  const [bulkRateWait, setBulkRateWait] = useState(0);
   const shouldPauseRef = useRef(false);
   const addedNamesRef  = useRef(new Set());
   const candidatesRef  = useRef([]);
@@ -422,7 +423,7 @@ export default function App() {
       try {
         const base64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=()=>rej(new Error("Read failed")); r.readAsDataURL(file); });
         const content = [{ type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64 }},{ type:"text", text:"Extract all candidate information." }];
-        const raw    = await callAPI({ model:"claude-sonnet-4-6", system:SYSTEM_PROMPT, messages:[{ role:"user", content }] });
+        const raw    = await callAPIBulk({ model:"claude-sonnet-4-6", system:SYSTEM_PROMPT, messages:[{ role:"user", content }] });
         const parsed = JSON.parse(raw);
 
         const existingCand = candidatesRef.current.find(c => {
@@ -460,8 +461,8 @@ export default function App() {
         setBulkStats(p=>({...p, failed:p.failed+1}));
       }
 
-      // Rate limit — 1.5s between requests
-      if (i<files.length-1) await new Promise(r=>setTimeout(r,1500));
+      // Rate limit delay — 4s between requests (prevents token rate limit)
+      if (i<files.length-1) await new Promise(r=>setTimeout(r,4000));
     }
 
     setFailedFiles(localResults.filter(r=>r.status==="error").map(r=>r.file));
@@ -533,7 +534,7 @@ export default function App() {
     const missingFiles = checkResults.missing.map(r=>r.file);
     if (!missingFiles.length) return;
     setBulkFiles(missingFiles); setBulkResults([]); setBulkDone(false); setBulkCurrent(0);
-    setBulkPaused(false); setBulkStats({ added:0, updated:0, duplicates:0, failed:0 }); setFailedFiles([]);
+    setBulkPaused(false); setBulkStats({ added:0, updated:0, duplicates:0, failed:0 }); setFailedFiles([]); setBulkRateWait(0);
     setView("extract"); setMode("pdf");
     setTimeout(() => extractBulkFiles(missingFiles), 100);
   };
@@ -541,7 +542,7 @@ export default function App() {
   const resetExtract = () => {
     setCvText(""); setPdfBase64(null); setFileName(""); setResult(null); setError(""); setJustAdded(false);
     setBulkFiles([]); setBulkResults([]); setBulkDone(false); setBulkCurrent(0);
-    setBulkPaused(false); setBulkStats({ added:0, updated:0, duplicates:0, failed:0 }); setFailedFiles([]);
+    setBulkPaused(false); setBulkStats({ added:0, updated:0, duplicates:0, failed:0 }); setFailedFiles([]); setBulkRateWait(0);
     shouldPauseRef.current = false;
     if (fileRef.current) fileRef.current.value="";
   };
@@ -667,11 +668,14 @@ export default function App() {
                             <span style={{ color:"#f57f17", fontWeight:"bold" }}>⚠ Duplicate: {bulkStats.duplicates}</span>
                             <span style={{ color:"#c00", fontWeight:"bold" }}>✗ Failed: {bulkStats.failed}</span>
                           </div>
-                          <div style={{ display:"flex", gap:8 }}>
+                          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
                             {!bulkPaused
                               ? <button onClick={pauseBulk} style={btn("#fff8e1","#f57f17",{border:"1px solid #ffe082",padding:"5px 14px",fontWeight:"normal",fontSize:12})}>⏸ Pause</button>
                               : <button onClick={resumeBulk} style={btn("#e8f5e9","#2e7d32",{border:"1px solid #a5d6a7",padding:"5px 14px",fontWeight:"normal",fontSize:12})}>▶ Resume</button>
                             }
+                            {bulkRateWait>0&&(
+                              <span style={{ fontSize:11, color:"#f57f17", fontStyle:"italic" }}>⏳ Rate limit — auto-retrying in {bulkRateWait}s...</span>
+                            )}
                           </div>
                         </div>
                       )}

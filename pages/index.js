@@ -334,7 +334,7 @@ export default function App() {
 
   // File handler
   const handleFile = (e) => {
-    const files = Array.from(e.target.files).slice(0,50);
+    const files = Array.from(e.target.files).slice(0,1000);
     if (!files.length) return;
     setError(""); setResult(null); setJustAdded(false);
     setBulkResults([]); setBulkDone(false); setBulkCurrent(0);
@@ -629,7 +629,7 @@ export default function App() {
                   {!pdfBase64&&!isBulkMode&&(
                     <div onClick={()=>fileRef.current.click()} style={{ border:"2px dashed #ccc", borderRadius:6, padding:"36px 24px", textAlign:"center", cursor:"pointer", background:"#fafafa" }}>
                       <div style={{ fontSize:14, color:"#555", marginBottom:6 }}>Click to upload PDF files</div>
-                      <div style={{ fontSize:12, color:"#aaa" }}>Select 1 CV or up to 50 at once</div>
+                      <div style={{ fontSize:12, color:"#aaa" }}>Select 1 CV or up to 1,000 at once</div>
                     </div>
                   )}
                   {pdfBase64&&!isBulkMode&&(
@@ -644,7 +644,7 @@ export default function App() {
                       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
                         <div style={{ fontSize:13, fontWeight:"bold", color:"#333" }}>
                           {bulkFiles.length} CVs selected
-                          <span style={{ fontSize:11, color:"#aaa", fontWeight:"normal", marginLeft:8 }}>(max 50)</span>
+                          <span style={{ fontSize:11, color:"#aaa", fontWeight:"normal", marginLeft:8 }}>(max 1000)</span>
                         </div>
                         {!loading&&!bulkPaused&&<button onClick={()=>fileRef.current.click()} style={btn("#fff","#555",{border:"1px solid #ccc",padding:"5px 12px",fontWeight:"normal"})}>Change files</button>}
                       </div>
